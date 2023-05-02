@@ -508,9 +508,7 @@ class MFE:
         For more information, check ``extract`` method documentation for
         in-depth information about arguments and return value.
         """
-        metafeat_vals = []  # type: t.List[t.Union[int, float, t.List]]
-        metafeat_names = []  # type: t.List[str]
-        metafeat_times = []  # type: t.List[float]
+
 
         skipped_count = 0
 
@@ -518,8 +516,11 @@ class MFE:
             tqdm.auto.tqdm(self._metadata_mtd_ft, disable=verbose != 1), 1
         )
 
-#         for ind, cur_metadata in _iterator:
+        # for ind, cur_metadata in _iterator:
         def worker(ind, cur_metadata):
+            metafeat_vals = []  # type: t.List[t.Union[int, float, t.List]]
+            metafeat_names = []  # type: t.List[str]
+            metafeat_times = []  # type: t.List[float]
             (
                 ft_mtd_name,
                 ft_mtd_callable,
@@ -553,7 +554,7 @@ class MFE:
                     )
 
                 skipped_count += 1
-                continue
+
 
             if verbose >= 2:
                 print(
@@ -596,28 +597,39 @@ class MFE:
                 metafeat_times.append(time_ft)
             
             return metafeat_vals, metafeat_names, metafeat_times
-#         if verbose == 1:
-#             _t_num_cols, _ = shutil.get_terminal_size()
-#             print(
-#                 "\r{:<{fill}}".format(
-#                     "Process of metafeature extraction finished.",
-#                     fill=_t_num_cols,
-#                 )
-#             )
+        # if verbose == 1:
+        #     _t_num_cols, _ = shutil.get_terminal_size()
+        #     print(
+        #         "\r{:<{fill}}".format(
+        #             "Process of metafeature extraction finished.",
+        #             fill=_t_num_cols,
+        #         )
+        #     )
+        #
+        # if verbose >= 2 and skipped_count > 0:
+        #     print(
+        #         "\nNote: skipped a total of {} metafeatures, "
+        #         "out of {} ({:.2f}%).".format(
+        #             skipped_count,
+        #             len(self._metadata_mtd_ft),
+        #             100 * skipped_count / len(self._metadata_mtd_ft),
+        #         )
+        #     )
+        results = Parallel(n_jobs=8)(delayed(worker)(ind, cur_metadata) for ind, cur_metadata in _iterator)
 
-#         if verbose >= 2 and skipped_count > 0:
-#             print(
-#                 "\nNote: skipped a total of {} metafeatures, "
-#                 "out of {} ({:.2f}%).".format(
-#                     skipped_count,
-#                     len(self._metadata_mtd_ft),
-#                     100 * skipped_count / len(self._metadata_mtd_ft),
-#                 )
-#             )
-        results = Parallel(n_jobs=n_jobs)(delayed(worker)(ind, cur_metadata) for ind, cur_metadata in _iterator)
+        metafeat_vals = []
+        metafeat_names = []
+        metafeat_times = []
 
-#         return metafeat_names, metafeat_vals, metafeat_times
-        return results
+        for i in range(len(results)):
+          for item in results[i][0]:
+            metafeat_vals.append(item)
+          for item in results[i][1]:
+            metafeat_names.append(item)
+          for item in results[i][2]:
+            metafeat_times.append(item)
+
+        return metafeat_names, metafeat_vals, metafeat_times
 
     def _fill_col_ind_by_type(
         self,
