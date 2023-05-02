@@ -14,6 +14,7 @@ import tqdm.auto
 
 import pymfe._internal as _internal
 import pymfe._bootstrap as _bootstrap
+from joblib import Parallel, delayed
 
 _TypeSeqExt = t.List[
     t.Tuple[str, t.Callable, t.Tuple[str, ...], t.Tuple[str, ...]]
@@ -517,7 +518,8 @@ class MFE:
             tqdm.auto.tqdm(self._metadata_mtd_ft, disable=verbose != 1), 1
         )
 
-        for ind, cur_metadata in _iterator:
+#         for ind, cur_metadata in _iterator:
+        def worker(ind, cur_metadata):
             (
                 ft_mtd_name,
                 ft_mtd_callable,
@@ -592,27 +594,30 @@ class MFE:
                 metafeat_vals.append(features)
                 metafeat_names.append(ft_name_without_prefix)
                 metafeat_times.append(time_ft)
+            
+            return metafeat_vals, metafeat_names, metafeat_times
+#         if verbose == 1:
+#             _t_num_cols, _ = shutil.get_terminal_size()
+#             print(
+#                 "\r{:<{fill}}".format(
+#                     "Process of metafeature extraction finished.",
+#                     fill=_t_num_cols,
+#                 )
+#             )
 
-        if verbose == 1:
-            _t_num_cols, _ = shutil.get_terminal_size()
-            print(
-                "\r{:<{fill}}".format(
-                    "Process of metafeature extraction finished.",
-                    fill=_t_num_cols,
-                )
-            )
+#         if verbose >= 2 and skipped_count > 0:
+#             print(
+#                 "\nNote: skipped a total of {} metafeatures, "
+#                 "out of {} ({:.2f}%).".format(
+#                     skipped_count,
+#                     len(self._metadata_mtd_ft),
+#                     100 * skipped_count / len(self._metadata_mtd_ft),
+#                 )
+#             )
+        results = Parallel(n_jobs=n_jobs)(delayed(worker)(ind, cur_metadata) for ind, cur_metadata in _iterator)
 
-        if verbose >= 2 and skipped_count > 0:
-            print(
-                "\nNote: skipped a total of {} metafeatures, "
-                "out of {} ({:.2f}%).".format(
-                    skipped_count,
-                    len(self._metadata_mtd_ft),
-                    100 * skipped_count / len(self._metadata_mtd_ft),
-                )
-            )
-
-        return metafeat_names, metafeat_vals, metafeat_times
+#         return metafeat_names, metafeat_vals, metafeat_times
+        return results
 
     def _fill_col_ind_by_type(
         self,
