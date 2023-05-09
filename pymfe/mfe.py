@@ -14,7 +14,7 @@ import tqdm.auto
 
 import pymfe._internal as _internal
 import pymfe._bootstrap as _bootstrap
-from joblib import Parallel, delayed
+
 
 _TypeSeqExt = t.List[
     t.Tuple[str, t.Callable, t.Tuple[str, ...], t.Tuple[str, ...]]
@@ -493,7 +493,8 @@ class MFE:
     def _call_feature_methods(
         self,
         verbose: int = 0,
-        # enable_parallel: bool = False,
+        enable_parallel: bool = False,
+        n_jobs: int = 1,
         suppress_warnings: bool = False,
         **kwargs,
     ) -> t.Tuple[
@@ -510,126 +511,133 @@ class MFE:
         """
 
 
-        skipped_count = 0
+
 
         _iterator = enumerate(
             tqdm.auto.tqdm(self._metadata_mtd_ft, disable=verbose != 1), 1
         )
+        skipped_count = 0
 
-        # for ind, cur_metadata in _iterator:
-        def worker(ind, cur_metadata):
-            metafeat_vals = []  # type: t.List[t.Union[int, float, t.List]]
-            metafeat_names = []  # type: t.List[str]
-            metafeat_times = []  # type: t.List[float]
-            (
-                ft_mtd_name,
-                ft_mtd_callable,
-                ft_mtd_args,
-                ft_mandatory,
-            ) = cur_metadata
+        if enable_parallel:
+            from joblib import Parallel, delayed
+            def worker(ind, cur_metadata):
+                metafeat_vals = []  # type: t.List[t.Union[int, float, t.List]]
+                metafeat_names = []  # type: t.List[str]
+                metafeat_times = []  # type: t.List[float]
 
-            ft_name_without_prefix = _internal.remove_prefix(
-                value=ft_mtd_name, prefix=_internal.MTF_PREFIX
-            )
 
-            try:
-                ft_mtd_args_pack = _internal.build_mtd_kwargs(
-                    mtd_name=ft_name_without_prefix,
-                    mtd_args=ft_mtd_args,
-                    mtd_mandatory=ft_mandatory,
-                    user_custom_args=kwargs.get(ft_name_without_prefix),
-                    inner_custom_args=self._custom_args_ft,
-                    precomp_args=self._precomp_args_ft,
-                    suppress_warnings=suppress_warnings,
+
+                (
+                    ft_mtd_name,
+                    ft_mtd_callable,
+                    ft_mtd_args,
+                    ft_mandatory,
+                ) = cur_metadata
+
+                ft_name_without_prefix = _internal.remove_prefix(
+                    value=ft_mtd_name, prefix=_internal.MTF_PREFIX
                 )
 
-            except RuntimeError:
-                # Not all method's mandatory arguments were satisfied.
-                # Skip the current method.
+                try:
+                    ft_mtd_args_pack = _internal.build_mtd_kwargs(
+                        mtd_name=ft_name_without_prefix,
+                        mtd_args=ft_mtd_args,
+                        mtd_mandatory=ft_mandatory,
+                        user_custom_args=kwargs.get(ft_name_without_prefix),
+                        inner_custom_args=self._custom_args_ft,
+                        precomp_args=self._precomp_args_ft,
+                        suppress_warnings=suppress_warnings,
+                    )
+
+                except RuntimeError:
+                    # Not all method's mandatory arguments were satisfied.
+                    # Skip the current method.
+                    if verbose >= 2:
+                        print(
+                            "\nSkipped '{}' ({} of {}).".format(
+                                ft_mtd_name, ind, len(self._metadata_mtd_ft)
+                            )
+                        )
+
+                    skipped_count += 1
+
+
                 if verbose >= 2:
                     print(
-                        "\nSkipped '{}' ({} of {}).".format(
+                        "\nExtracting '{}' feature ({} of {})...".format(
                             ft_mtd_name, ind, len(self._metadata_mtd_ft)
                         )
                     )
 
-                skipped_count += 1
+                features, time_ft = _internal.timeit(
+                    _internal.get_feat_value,
+                    ft_mtd_name,
+                    ft_mtd_args_pack,
+                    ft_mtd_callable,
+                    suppress_warnings,
+                )
+
+                ft_has_length = hasattr(features, "__len__")
+
+                if ft_has_length and self._timeopt_type_is_avg():
+                    time_ft /= max(1, len(features))
+
+                if self._metadata_mtd_sm and ft_has_length:
+                    sm_ret = self._call_summary_methods(
+                        feature_values=features,
+                        feature_name=ft_name_without_prefix,
+                        verbose=verbose,
+                        suppress_warnings=suppress_warnings,
+                        **kwargs,
+                    )
+
+                    summarized_names, summarized_vals, times_sm = sm_ret
+
+                    metafeat_vals += summarized_vals
+                    metafeat_names += summarized_names
+                    metafeat_times += self._combine_time(time_ft, times_sm)
+
+                else:
+                    metafeat_vals.append(features)
+                    metafeat_names.append(ft_name_without_prefix)
+                    metafeat_times.append(time_ft)
 
 
-            if verbose >= 2:
+
+                return metafeat_vals, metafeat_names, metafeat_times
+            if verbose == 1:
+                _t_num_cols, _ = shutil.get_terminal_size()
                 print(
-                    "\nExtracting '{}' feature ({} of {})...".format(
-                        ft_mtd_name, ind, len(self._metadata_mtd_ft)
+                    "\r{:<{fill}}".format(
+                        "Process of metafeature extraction finished.",
+                        fill=_t_num_cols,
                     )
                 )
 
-            features, time_ft = _internal.timeit(
-                _internal.get_feat_value,
-                ft_mtd_name,
-                ft_mtd_args_pack,
-                ft_mtd_callable,
-                suppress_warnings,
-            )
-
-            ft_has_length = hasattr(features, "__len__")
-
-            if ft_has_length and self._timeopt_type_is_avg():
-                time_ft /= max(1, len(features))
-
-            if self._metadata_mtd_sm and ft_has_length:
-                sm_ret = self._call_summary_methods(
-                    feature_values=features,
-                    feature_name=ft_name_without_prefix,
-                    verbose=verbose,
-                    suppress_warnings=suppress_warnings,
-                    **kwargs,
+            if verbose >= 2 and skipped_count > 0:
+                print(
+                    "\nNote: skipped a total of {} metafeatures, "
+                    "out of {} ({:.2f}%).".format(
+                        skipped_count,
+                        len(self._metadata_mtd_ft),
+                        100 * skipped_count / len(self._metadata_mtd_ft),
+                    )
                 )
+            results = Parallel(n_jobs=n_jobs)(delayed(worker)(ind, cur_metadata) for ind, cur_metadata in _iterator)
 
-                summarized_names, summarized_vals, times_sm = sm_ret
+            metafeat_vals = []
+            metafeat_names = []
+            metafeat_times = []
 
-                metafeat_vals += summarized_vals
-                metafeat_names += summarized_names
-                metafeat_times += self._combine_time(time_ft, times_sm)
+            for i in range(len(results)):
+              for item in results[i][0]:
+                metafeat_vals.append(item)
+              for item in results[i][1]:
+                metafeat_names.append(item)
+              for item in results[i][2]:
+                metafeat_times.append(item)
 
-            else:
-                metafeat_vals.append(features)
-                metafeat_names.append(ft_name_without_prefix)
-                metafeat_times.append(time_ft)
-            
-            return metafeat_vals, metafeat_names, metafeat_times
-        # if verbose == 1:
-        #     _t_num_cols, _ = shutil.get_terminal_size()
-        #     print(
-        #         "\r{:<{fill}}".format(
-        #             "Process of metafeature extraction finished.",
-        #             fill=_t_num_cols,
-        #         )
-        #     )
-        #
-        # if verbose >= 2 and skipped_count > 0:
-        #     print(
-        #         "\nNote: skipped a total of {} metafeatures, "
-        #         "out of {} ({:.2f}%).".format(
-        #             skipped_count,
-        #             len(self._metadata_mtd_ft),
-        #             100 * skipped_count / len(self._metadata_mtd_ft),
-        #         )
-        #     )
-        results = Parallel(n_jobs=8)(delayed(worker)(ind, cur_metadata) for ind, cur_metadata in _iterator)
-
-        metafeat_vals = []
-        metafeat_names = []
-        metafeat_times = []
-
-        for i in range(len(results)):
-          for item in results[i][0]:
-            metafeat_vals.append(item)
-          for item in results[i][1]:
-            metafeat_names.append(item)
-          for item in results[i][2]:
-            metafeat_times.append(item)
-
-        return metafeat_names, metafeat_vals, metafeat_times
+            return metafeat_names, metafeat_vals, metafeat_times
 
     def _fill_col_ind_by_type(
         self,
@@ -1197,6 +1205,7 @@ class MFE:
         self,
         verbose: int = 0,
         enable_parallel: bool = False,
+        n_jobs: int = 1,
         suppress_warnings: bool = False,
         out_type: t.Any = tuple,
         **kwargs,
@@ -1216,8 +1225,11 @@ class MFE:
 
         enable_parallel : :obj:`bool`, optional
             If True, then the meta-feature extraction is done with
-            multi-processes. Currently, this argument has no effect by now
-            (to be implemented).
+            multi-processes.
+
+        n_jobs : :obj:`int`, optional
+            Defines number of processes is used if enable_parallel = True
+
 
         suppress_warnings : :obj:`bool`, optional
             If True, do not show any warning while extracting meta-features.
@@ -1339,6 +1351,7 @@ class MFE:
             results = self._call_feature_methods(
                 verbose=verbose,
                 enable_parallel=enable_parallel,
+                n_jobs=n_jobs,
                 suppress_warnings=suppress_warnings,
                 **kwargs,
             )  # type: t.Tuple[t.List, ...]
@@ -1391,25 +1404,29 @@ class MFE:
             )
 
         _deal_types = {
-            tuple: lambda names, vals, times=[]: (names, vals, times)
+            tuple: lambda names, vals, times: (names, vals, times)
             if self.timeopt
-            else (names, vals),
-            dict: lambda names, vals, times=[]: {
+            else
+            (names, vals),
+            dict: lambda names, vals, times: {
                 "mtf_names": names,
                 "mtf_vals": vals,
                 "mtf_time": times,
             }
             if self.timeopt
-            else {"mtf_names": names, "mtf_vals": vals},
-            pd.DataFrame: lambda names, vals, times=[]: pd.DataFrame(
+            else
+            {"mtf_names": names, "mtf_vals": vals},
+            pd.DataFrame: lambda names, vals, times: pd.DataFrame(
                 data=(vals, times), columns=names, index=("values", "time")
             )
             if self.timeopt
-            else pd.DataFrame(data=(vals,), columns=names),
+            else
+            pd.DataFrame(data=(vals,), columns=names),
         }
 
         try:
-            return _deal_types[out_type](res_names, res_vals, res_times)
+            #return _deal_types[out_type](res_names, res_vals, res_times)
+            return results
         except KeyError as out_not_defined:
             raise TypeError("Output type not supported.") from out_not_defined
 
